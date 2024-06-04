@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/pflag"
 	"github.com/yuin/goldmark"
@@ -14,20 +15,20 @@ import (
 )
 
 var (
-	inputName       string
-	outputName      string
 	frontMatterName string
-	minDepth        int
 	maxDepth        int
+	minDepth        int
+	outputName      string
+	title           string
 )
 
 func init() {
-	pflag.StringVarP(&inputName, "input", "i", "-",
-		"name of output file")
 	pflag.StringVarP(&outputName, "output", "o", "-",
 		"name of output file")
 	pflag.StringVarP(&frontMatterName, "front-matter", "f", "",
 		"name of front matter file")
+	pflag.StringVarP(&title, "title", "t", "Untitled Document",
+		"HTML metadata title")
 	pflag.IntVarP(&minDepth, "min-depth", "M", 1,
 		"min depth to be included in table of contents")
 	pflag.IntVarP(&maxDepth, "max-depth", "m", 2,
@@ -89,9 +90,6 @@ func readFileOrDie(name string) []byte {
 func main() {
 	pflag.Parse()
 
-	if inputName == "" {
-		croak("input file name is required")
-	}
 	if outputName == "" {
 		croak("output file name is required")
 	}
@@ -107,20 +105,38 @@ func main() {
 	fmSource := readFileOrDie(frontMatterName)
 
 	fmDoc := fmd.Parser().Parse(text.NewReader(fmSource))
-	source := readFileOrDie(inputName)
-	if len(source) == 0 {
-		croak("no data read from input")
+	buffer := strings.Builder{}
+
+	for _, inputName := range pflag.Args() {
+		source := readFileOrDie(inputName)
+		if len(source) == 0 {
+			croak("no data read from input %s", inputName)
+		}
+		buffer.Write(source)
 	}
-	doc := md.Parser().Parse(text.NewReader(source))
-	tocTree, err := toc.Inspect(doc, source, toc.MinDepth(minDepth), toc.MaxDepth(maxDepth))
+	catSource := []byte(buffer.String())
+	doc := md.Parser().Parse(text.NewReader(catSource))
+	tocTree, err := toc.Inspect(doc, catSource, toc.MinDepth(minDepth), toc.MaxDepth(maxDepth))
 	if err != nil {
-		croak("while preparing Table of Contents", err)
+		croak("while preparing Table of Contents: %v", err)
 	}
 
 	out, closer := outputHandle()
 	defer closer()
 
+	out.Write(([]byte)(fmt.Sprintf(`
+<html>
+<head>
+<meta charset="utf-8">
+<title>
+%s
+</title>
+</head>
+<body>
+`,
+		title)))
 	fmd.Renderer().Render(out, fmSource, fmDoc)
-	md.Renderer().Render(out, source, toc.RenderList(tocTree))
-	md.Renderer().Render(out, source, doc)
+	md.Renderer().Render(out, catSource, toc.RenderList(tocTree))
+	md.Renderer().Render(out, catSource, doc)
+	out.Write(([]byte)("</body></html>"))
 }
